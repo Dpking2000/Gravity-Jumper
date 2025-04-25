@@ -1,0 +1,1467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crystal Collector Game (Three.js Edition) - With Lava and Health</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: Arial, sans-serif;
+        }
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 20px;
+            font-weight: bold;
+            text-shadow: 2px 2px 2px rgba(0,0,0,0.8);
+            z-index: 10;
+        }
+        #health {
+            position: absolute;
+            top: 40px;
+            left: 10px;
+            display: flex;
+            z-index: 10;
+        }
+        .heart {
+            width: 30px;
+            height: 30px;
+            margin-right: 5px;
+        }
+        #timer {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: white;
+            font-size: 20px;
+            font-weight: bold;
+            text-shadow: 2px 2px 2px rgba(0,0,0,0.8);
+            z-index: 10;
+        }
+        #controls-text {
+            position: absolute;
+            bottom: 35px;
+            left: 10px;
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+            text-shadow: 2px 2px 2px rgba(0,0,0,0.8);
+            z-index: 10;
+        }
+        #direction-text {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+            text-shadow: 2px 2px 2px rgba(0,0,0,0.8);
+            z-index: 10;
+        }
+        #game-over {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.8);
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 36px;
+            text-align: center;
+            z-index: 20;
+        }
+        #final-score {
+            font-size: 48px;
+            margin: 20px 0;
+            color: #ffcc00;
+        }
+        #restart-btn {
+            padding: 10px 20px;
+            font-size: 24px;
+            background-color: #4caf50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 20px;
+        }
+        #restart-btn:hover {
+            background-color: #45a049;
+        }
+        #debug-info {
+            position: absolute;
+            top: 40px;
+            left: 10px;
+            color: yellow;
+            font-size: 14px;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <div id="hud">Score: <span id="score">0</span></div>
+        <div id="health">
+            <!-- Hearts will be added here dynamically -->
+        </div>
+        <div id="timer">Time: <span id="time">3:00</span></div>
+        <div id="controls-text">Controls: A = left, D = right, W/Space = jump (relative to view)</div>
+        <div id="direction-text">Gravity: DOWN (Use Up/Down arrow keys to change)</div>
+        <div id="debug-info"></div>
+        <div id="game-over">
+            <h1>Game Over!</h1>
+            <p>Your final score:</p>
+            <div id="final-score">0</div>
+            <button id="restart-btn">Play Again</button>
+        </div>
+    </div>
+    <!-- Import Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Game variables
+        const scoreElement = document.getElementById('score');
+        const timeElement = document.getElementById('time');
+        const directionText = document.getElementById('direction-text');
+        const healthContainer = document.getElementById('health');
+        const gameOverScreen = document.getElementById('game-over');
+        const finalScoreElement = document.getElementById('final-score');
+        const restartBtn = document.getElementById('restart-btn');
+        const debugInfo = document.getElementById('debug-info');
+        const cameraFixedPosition = new THREE.Vector3(0, 0, 25); // Fixed camera position
+        const cameraRotationOffset = new THREE.Euler(0, 0, 0); // Rotation offset for camera
+        // Debug function
+        function debug(message) {
+            console.log(message);
+            debugInfo.textContent = "Debug: " + message;
+        }
+        let score = 0;
+        let timeLeft = 180; // 3 minutes in seconds
+        let gameActive = true;
+        let playerHealth = 3; // Player starts with 3 health
+        let invulnerable = false; // Invulnerability after taking damage
+        let invulnerableTimer = 0; // Timer for invulnerability period
+        // World orientation variables
+        let gravityDirection = 'down'; // 'down' or 'up' only
+        let targetRotation = { x: 0, y: 0, z: 0 }; // Target rotation in radians
+        let currentRotation = { x: 0, y: 0, z: 0 }; // Current rotation in radians
+        let rotationSpeed = 0.05; // Rotation speed in radians per frame
+        // Game physics
+        const gravityForce = 0.01;
+        const friction = 0.95;
+        const jumpForce = 0.3;
+        // Box dimensions
+        const boxWidth = 20;
+        const boxHeight = 15;
+        const boxDepth = 20;
+        const wallThickness = 0.5;
+        // Three.js variables
+        let scene, camera, renderer, ambientLight, directionalLight, pointLight;
+        let box, playerMesh, spritePlane;
+        let raycaster, cameraTarget;
+        let wallTexture, lavaTexture, heartTexture; // Added textures
+        // Wall references for transparency control
+        let frontWall, backWall;
+        // Player variables
+        const player = {
+            position: new THREE.Vector3(0, 0, 0),
+            velocity: new THREE.Vector3(0, 0, 0),
+            size: 0.8 * 3, // Increased player size by 5x
+            speed: 0.03,
+            jumping: false,
+            grounded: false,
+            frames: 7,
+            currentFrame: 0,
+            frameWidth: 0,
+            animationSpeed: 6,
+            animationCounter: 0,
+            sprite: null,
+            spriteMap: null,
+            facingDirection: 1, // 1 = right, -1 = left, for sprite flipping
+            lastDamageTime: 0 // Track when player was last damaged
+        };
+        // Crystals
+        const crystals = [];
+        const maxCrystals = 10;
+        let crystalTexture;
+        
+        // Lava blocks
+        const lavaBlocks = [];
+        const lavaSize = 2; // Size of lava blocks
+        const lavaDamage = 1; // Damage caused by lava
+        const invulnerabilityTime = 60; // Frames of invulnerability after taking damage
+        
+        // Input handling
+        const keys = {};
+        
+        document.addEventListener('keydown', function(e) {
+            keys[e.key] = true;
+            
+            // Only support up and down gravity directions
+            if (e.key === 'ArrowDown' && gravityDirection !== 'down') {
+                changeGravity('down');
+                e.preventDefault();
+            } else if (e.key === 'ArrowUp' && gravityDirection !== 'up') {
+                changeGravity('up');
+                e.preventDefault();
+            }
+        });
+        
+        document.addEventListener('keyup', function(e) {
+            keys[e.key] = false;
+        });
+        
+        // Initialize Three.js scene
+        function initThree() {
+            
+            try {
+                // Create scene
+                scene = new THREE.Scene();
+                scene.background = new THREE.Color(0x222222);
+                
+                // Create camera
+                camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                camera.position.z = 25;
+                
+                // Create renderer
+                renderer = new THREE.WebGLRenderer({ antialias: true });
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.shadowMap.enabled = true;
+                renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+                document.getElementById('game-container').appendChild(renderer.domElement);
+                
+                // Add lights
+                ambientLight = new THREE.AmbientLight(0x404040, 0.5);
+                scene.add(ambientLight);
+                
+                directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                directionalLight.position.set(10, 20, 15);
+                directionalLight.castShadow = true;
+                directionalLight.shadow.camera.near = 0.5;
+                directionalLight.shadow.camera.far = 50;
+                directionalLight.shadow.camera.left = -20;
+                directionalLight.shadow.camera.right = 20;
+                directionalLight.shadow.camera.top = 20;
+                directionalLight.shadow.camera.bottom = -20;
+                directionalLight.shadow.mapSize.width = 2048;
+                directionalLight.shadow.mapSize.height = 2048;
+                scene.add(directionalLight);
+                
+
+                // Create raycaster for collision detection
+                raycaster = new THREE.Raycaster();
+                
+                // Create camera target (camera will follow this)
+                cameraTarget = new THREE.Object3D();
+                scene.add(cameraTarget);
+                
+                // Create reference plane at z=0 for sprites to live on
+                // This ensures all sprites are on the same z-layer
+                spritePlane = new THREE.Object3D();
+                scene.add(spritePlane);
+                
+                // Handle window resize
+                window.addEventListener('resize', function() {
+                    camera.aspect = window.innerWidth / window.innerHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(window.innerWidth, window.innerHeight);
+                });
+                
+                // Load textures
+                const textureLoader = new THREE.TextureLoader();
+                
+                // Load wall texture
+                textureLoader.load(
+                    'wall.png',
+                    function(texture) {
+                        wallTexture = texture;
+                        wallTexture.wrapS = THREE.RepeatWrapping;
+                        wallTexture.wrapT = THREE.RepeatWrapping;
+                        wallTexture.repeat.set(4, 4); // Repeat texture 4 times on each side
+                        
+                        // Create the box with the loaded texture
+                        createBox();
+                    },
+                    undefined,
+                    function(error) {
+                        wallTexture = createFallbackTexture('#888888');
+                        createBox();
+                    }
+                );
+                
+                // Load lava texture
+                textureLoader.load(
+                    'lava.png',
+                    function(texture) {
+                        lavaTexture = texture;
+                        lavaTexture.wrapS = THREE.RepeatWrapping;
+                        lavaTexture.wrapT = THREE.RepeatWrapping;
+                        
+                        // Create lava blocks
+                        createLavaBlocks();
+                    },
+                    undefined,
+                    function(error) {
+                        lavaTexture = createFallbackTexture('#ff0000');
+                        createLavaBlocks();
+                    }
+                );
+                
+                // Load heart texture for UI
+                textureLoader.load(
+                    'heart.png',
+                    function(texture) {
+                        heartTexture = texture;
+                        updateHealthDisplay();
+                    },
+                    undefined,
+                    function(error) {
+                        debug("Error loading heart texture: " + error.message + ". Using fallback.");
+                        createFallbackHearts();
+                    }
+                );
+                
+            } catch (error) {
+                debug("Error initializing Three.js: " + error.message);
+            }
+        }
+        
+        // Create the game box
+        function createBox() {
+            
+            try {
+                // Define materials
+                const texturedMaterial = new THREE.MeshPhongMaterial({ 
+                    map: wallTexture,
+                    side: THREE.DoubleSide 
+                });
+                
+                const transparentMaterial = new THREE.MeshPhongMaterial({ 
+                    color: 0x444444, 
+                    transparent: true, 
+                    opacity: 0.1, 
+                    side: THREE.DoubleSide 
+                });
+                
+                // Floor (bottom)
+                const floorGeometry = new THREE.PlaneGeometry(boxWidth, boxDepth);
+                const floor = new THREE.Mesh(floorGeometry, texturedMaterial.clone());
+                floor.rotation.x = Math.PI / 2;
+                floor.position.y = -boxHeight / 2;
+                floor.receiveShadow = true;
+                scene.add(floor);
+                
+                // Ceiling (top)
+                const ceilingGeometry = new THREE.PlaneGeometry(boxWidth, boxDepth);
+                const ceiling = new THREE.Mesh(ceilingGeometry, texturedMaterial.clone());
+                ceiling.rotation.x = -Math.PI / 2;
+                ceiling.position.y = boxHeight / 2;
+                ceiling.receiveShadow = true;
+                scene.add(ceiling);
+                
+                // Left wall
+                const leftWallGeometry = new THREE.PlaneGeometry(boxDepth, boxHeight);
+                const leftWall = new THREE.Mesh(leftWallGeometry, texturedMaterial.clone());
+                leftWall.rotation.y = Math.PI / 2;
+                leftWall.position.x = -boxWidth / 2;
+                leftWall.receiveShadow = true;
+                scene.add(leftWall);
+                
+                // Right wall
+                const rightWallGeometry = new THREE.PlaneGeometry(boxDepth, boxHeight);
+                const rightWall = new THREE.Mesh(rightWallGeometry, texturedMaterial.clone());
+                rightWall.rotation.y = -Math.PI / 2;
+                rightWall.position.x = boxWidth / 2;
+                rightWall.receiveShadow = true;
+                scene.add(rightWall);
+                
+                // Back wall
+                const backWallGeometry = new THREE.PlaneGeometry(boxWidth, boxHeight);
+                backWall = new THREE.Mesh(backWallGeometry, texturedMaterial.clone());
+                backWall.position.z = -boxDepth / 2;
+                backWall.receiveShadow = true;
+                scene.add(backWall);
+                
+                // Front wall (transparent)
+                const frontWallGeometry = new THREE.PlaneGeometry(boxWidth, boxHeight);
+                frontWall = new THREE.Mesh(frontWallGeometry, transparentMaterial);
+                frontWall.rotation.y = Math.PI;
+                frontWall.position.z = boxDepth / 2;
+                frontWall.receiveShadow = true;
+                scene.add(frontWall);
+                
+                // Add a thin wireframe box overlay to show boundaries
+                const boxGeometry = new THREE.BoxGeometry(boxWidth, boxHeight, boxDepth);
+                const wireframeMaterial = new THREE.MeshBasicMaterial({
+                    color: 0x888888,
+                    wireframe: true,
+                    transparent: true,
+                    opacity: 0.2
+                });
+                box = new THREE.Mesh(boxGeometry, wireframeMaterial);
+                
+                // Important: Add box to spritePlane so it rotates with everything else
+                spritePlane.add(box);
+                
+            } catch (error) {
+                debug("Error creating game box: " + error.message);
+            }
+        }
+        
+        function createLavaBlocks() {
+    
+    try {
+        if (!lavaTexture) {
+            lavaTexture = createFallbackTexture('#ff4400');
+        }
+        
+        const lavaMaterial = new THREE.MeshPhongMaterial({
+            map: lavaTexture,
+            emissive: 0xff4400,
+            emissiveIntensity: 0.5,
+            side: THREE.DoubleSide
+        });
+        
+        // Create lava block geometries
+        const lavaGeometry = new THREE.PlaneGeometry(lavaSize, lavaSize);
+        
+        // Create left lava block on the floor
+        const lavaLeft = new THREE.Mesh(lavaGeometry, lavaMaterial.clone());
+        lavaLeft.rotation.x = Math.PI / 2; // Same rotation as floor
+        lavaLeft.position.set(-5, -boxHeight / 2 + 0.01, 0); // Just above floor, to the left
+        lavaLeft.receiveShadow = false;
+        // NOTE: Adding to scene instead of spritePlane so they don't rotate
+        scene.add(lavaLeft);
+        
+        // Create right lava block on the floor
+        const lavaRight = new THREE.Mesh(lavaGeometry, lavaMaterial.clone());
+        lavaRight.rotation.x = Math.PI / 2; // Same rotation as floor
+        lavaRight.position.set(5, -boxHeight / 2 + 0.01, 0); // Just above floor, to the right
+        lavaRight.receiveShadow = false;
+        // NOTE: Adding to scene instead of spritePlane so they don't rotate
+        scene.add(lavaRight);
+        
+        // Create left lava block on the ceiling
+        const lavaCeilingLeft = new THREE.Mesh(lavaGeometry, lavaMaterial.clone());
+        lavaCeilingLeft.rotation.x = -Math.PI / 2; // Same rotation as ceiling
+        lavaCeilingLeft.position.set(-5, boxHeight / 2 - 0.01, 0); // Just below ceiling, to the left
+        lavaCeilingLeft.receiveShadow = false;
+        scene.add(lavaCeilingLeft);
+        
+        // Create right lava block on the ceiling
+        const lavaCeilingRight = new THREE.Mesh(lavaGeometry, lavaMaterial.clone());
+        lavaCeilingRight.rotation.x = -Math.PI / 2; // Same rotation as ceiling
+        lavaCeilingRight.position.set(5, boxHeight / 2 - 0.01, 0); // Just below ceiling, to the right
+        lavaCeilingRight.receiveShadow = false;
+        scene.add(lavaCeilingRight);
+        
+        // Store lava blocks for collision detection
+        lavaBlocks.push({
+            mesh: lavaLeft,
+            position: lavaLeft.position.clone(),
+            size: lavaSize,
+            active: true,
+            location: 'floor' // Identify where this lava block is
+        });
+        
+        lavaBlocks.push({
+            mesh: lavaRight,
+            position: lavaRight.position.clone(),
+            size: lavaSize,
+            active: true,
+            location: 'floor' // Identify where this lava block is
+        });
+        
+        lavaBlocks.push({
+            mesh: lavaCeilingLeft,
+            position: lavaCeilingLeft.position.clone(),
+            size: lavaSize,
+            active: true,
+            location: 'ceiling' // Identify where this lava block is
+        });
+        
+        lavaBlocks.push({
+            mesh: lavaCeilingRight,
+            position: lavaCeilingRight.position.clone(),
+            size: lavaSize,
+            active: true,
+            location: 'ceiling' // Identify where this lava block is
+        });
+        
+               // Add point lights for lava glow effect
+               const lavaLightLeft = new THREE.PointLight(0xff4400, 0.8, 50);
+                lavaLightLeft.position.copy(lavaLeft.position);
+                lavaLightLeft.position.y += 1; // Position light above lava
+                scene.add(lavaLightLeft);
+                
+                const lavaLightRight = new THREE.PointLight(0xff4400, 0.8, 5);
+                lavaLightRight.position.copy(lavaRight.position);
+                lavaLightRight.position.y += 1; // Position light above lava
+                scene.add(lavaLightRight);
+
+        
+    } catch (error) {
+        debug("Error creating lava blocks: " + error.message);
+    }
+}
+        // Create a fallback texture (solid color) if loading fails
+        function createFallbackTexture(color) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 128;
+            canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            
+            // Create a basic pattern
+            ctx.fillStyle = color;
+            ctx.fillRect(0, 0, 128, 128);
+            
+            // Add some texture
+            ctx.strokeStyle = '#555555';
+            ctx.lineWidth = 2;
+            
+            // Draw horizontal lines
+            for (let y = 16; y < 128; y += 32) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(128, y);
+                ctx.stroke();
+            }
+            
+            // Draw vertical lines
+            for (let x = 16; x < 128; x += 32) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, 128);
+                ctx.stroke();
+            }
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.wrapS = THREE.RepeatWrapping;
+            texture.wrapT = THREE.RepeatWrapping;
+            texture.repeat.set(4, 4);
+            return texture;
+        }
+        
+        // Create fallback hearts for UI
+        function createFallbackHearts() {            
+            // Clear existing hearts
+            while (healthContainer.firstChild) {
+                healthContainer.removeChild(healthContainer.firstChild);
+            }
+            
+            // Create hearts based on current health
+            for (let i = 0; i < playerHealth; i++) {
+                const heart = document.createElement('div');
+                heart.classList.add('heart');
+                heart.style.backgroundColor = 'red';
+                heart.style.borderRadius = '50%';
+                healthContainer.appendChild(heart);
+            }
+        }
+        
+        // Update health display
+        function updateHealthDisplay() {            
+            try {
+                // Clear existing hearts
+                while (healthContainer.firstChild) {
+                    healthContainer.removeChild(healthContainer.firstChild);
+                }
+                
+                // Create hearts based on current health
+                for (let i = 0; i < playerHealth; i++) {
+                    if (heartTexture) {
+                        // Use loaded heart texture
+                        const heart = document.createElement('img');
+                        heart.src = heartTexture.image.src;
+                        heart.classList.add('heart');
+                        healthContainer.appendChild(heart);
+                    } else {
+                        // Use fallback heart
+                        const heart = document.createElement('div');
+                        heart.classList.add('heart');
+                        heart.style.backgroundColor = 'red';
+                        heart.style.borderRadius = '50%';
+                        healthContainer.appendChild(heart);
+                    }
+                }
+            } catch (error) {
+                debug("Error updating health display: " + error.message);
+            }
+        }
+        
+        // Load textures and create player sprite
+        function createPlayer() {
+            try {
+                // Create a texture loader
+                const loader = new THREE.TextureLoader();
+                
+                // Load the sprite sheet texture
+                loader.load(
+                    'sprite.png', 
+                    function(texture) {
+                        player.spriteMap = texture;
+                        
+                        // Calculate frame width once texture is loaded
+                        player.frameWidth = texture.image.width / player.frames;
+                        const frameHeight = texture.image.height;
+                        
+                        // Set texture properties
+                        texture.magFilter = THREE.NearestFilter;
+                        texture.minFilter = THREE.NearestFilter;
+                        
+                        // Create sprite material with first frame
+                        const spriteMaterial = new THREE.SpriteMaterial({
+                            map: texture,
+                            color: 0xffffff
+                        });
+                        
+                        // Create sprite
+                        player.sprite = new THREE.Sprite(spriteMaterial);
+                        player.sprite.scale.set(player.size * 1, player.size * 1, 1);
+                        
+                        // Add sprite to the sprite plane to ensure it's on the same layer
+                        spritePlane.add(player.sprite);
+                        
+                        // Hide the placeholder mesh now that we have the sprite
+                        if (playerMesh) {
+                            playerMesh.visible = false;
+                        }
+                        
+                        // Set up UV mapping for the first frame
+                        updatePlayerFrame();
+                        
+                        // Update player position to ensure it stands on the floor
+                        repositionPlayerOnGround();
+                    },
+                    undefined, // onProgress callback not needed
+                    function(error) {
+                        debug("Error loading player sprite: " + error.message + ". Using fallback.");
+                        // Use a fallback texture
+                        const fallbackTexture = createFallbackTexture('#ff0000');
+                        player.spriteMap = fallbackTexture;
+                        
+                        // Create sprite with fallback texture
+                        const spriteMaterial = new THREE.SpriteMaterial({
+                            map: fallbackTexture,
+                            color: 0xffffff
+                        });
+                        
+                        player.sprite = new THREE.Sprite(spriteMaterial);
+                        player.sprite.scale.set(player.size * 2, player.size * 2, 1);
+                        spritePlane.add(player.sprite);
+                        
+                        if (playerMesh) {
+                            playerMesh.visible = false;
+                        }
+                        
+                        // Ensure player is positioned on ground
+                        repositionPlayerOnGround();
+                    }
+                );
+                
+                // Also create a simple placeholder mesh while texture is loading
+                const geometry = new THREE.BoxGeometry(player.size, player.size, player.size);
+                const material = new THREE.MeshPhongMaterial({ color: 0xff0000 });
+                playerMesh = new THREE.Mesh(geometry, material);
+                playerMesh.castShadow = true;
+                scene.add(playerMesh);
+                
+                // Set initial position - will be adjusted by repositionPlayerOnGround()
+                player.position.set(0, 0, 0);
+                updatePlayerPosition();
+                
+            } catch (error) {
+                debug("Error creating player: " + error.message);
+            }
+        }
+        
+// Repositions player to stand on the ground
+function repositionPlayerOnGround() {
+    // Position player on the floor initially
+    // Calculate the position based on the player size
+    const halfHeight = boxHeight / 2;
+    const playerHalfHeight = player.size / 2;
+    
+    // Set player at the bottom of the box
+    // Modified to position the player firmly on the ground
+    if (gravityDirection === 'down') {
+        // Position player exactly at the bottom of the box (minus player height)
+        player.position.y = -halfHeight + playerHalfHeight - 0.1; // Subtract a small value to ensure player touches ground
+    } else {
+        // Position player exactly at the top of the box (plus player height)
+        player.position.y = halfHeight - playerHalfHeight + 0.1; // Add a small value to ensure player touches ceiling
+    }
+    
+    // Update player position
+    updatePlayerPosition();
+}
+
+        // Update player frame for animation
+        function updatePlayerFrame() {
+            if (!player.sprite || !player.spriteMap) return;
+            
+            try {
+                // Calculate UVs for the current frame
+                const frameWidth = 1.0 / player.frames;
+                const offset = (player.currentFrame * frameWidth);
+                
+                // Update sprite material's map
+                player.sprite.material.map = player.spriteMap;
+                
+                // Update UV mapping
+                player.sprite.material.map.offset.x = offset;
+                player.sprite.material.map.repeat.x = frameWidth;
+                
+                // Ensure the material updates
+                player.sprite.material.needsUpdate = true;
+                
+                // Apply visual effect for invulnerability
+                if (invulnerable) {
+                    // Flashing effect
+                    player.sprite.material.opacity = Math.sin(invulnerableTimer * 0.5) * 0.5 + 0.5;
+                } else {
+                    player.sprite.material.opacity = 1.0;
+                }
+            } catch (error) {
+                debug("Error updating player frame: " + error.message);
+            }
+        }
+        
+        // Load crystal texture and create crystals
+        function createCrystals() {
+            try {
+                // Create a texture loader
+                const loader = new THREE.TextureLoader();
+                
+                // Load the crystal texture
+                loader.load(
+                    'crystal.png',
+                    function(texture) {
+                        crystalTexture = texture;
+                        texture.magFilter = THREE.NearestFilter;
+                        texture.minFilter = THREE.NearestFilter;
+                        
+                        // Spawn initial crystals
+                        for (let i = 0; i < maxCrystals / 2; i++) {
+                            spawnCrystal();
+                        }
+                    },
+                    undefined, // onProgress callback not needed
+                    function(error) {
+                        debug("Error loading crystal texture: " + error.message + ". Using fallback.");
+                        
+                        // Use a fallback texture
+                        crystalTexture = createFallbackTexture('#00ffff');
+                        
+                        // Spawn initial crystals with fallback texture
+                        for (let i = 0; i < maxCrystals / 2; i++) {
+                            spawnCrystal();
+                        }
+                    }
+                );
+            } catch (error) {
+                debug("Error creating crystals: " + error.message);
+            }
+        }
+        
+        // Spawn a new crystal
+        function spawnCrystal() {
+            if (!crystalTexture || crystals.length >= maxCrystals) return;
+            
+            try {
+                // Generate a random position within the box (keeping Z at 0)
+                const x = (Math.random() - 0.5) * (boxWidth - 2);
+                const y = (Math.random() - 0.5) * (boxHeight - 2);
+                const z = 0; // Keep at z=0 to ensure same layer as player
+                
+                // Create crystal object
+                const crystal = {
+                    position: new THREE.Vector3(x, y, z),
+                    size: 0.8 * 0.5, // Reduced crystal size by half
+                    collected: false,
+                    sprite: null,
+                    light: null
+                };
+                
+                // Create crystal sprite
+                const spriteMaterial = new THREE.SpriteMaterial({
+                    map: crystalTexture,
+                    color: 0xffffff
+                });
+                
+                // Create the sprite for the crystal
+                crystal.sprite = new THREE.Sprite(spriteMaterial);
+                crystal.sprite.scale.set(crystal.size * 2, crystal.size * 2, 1);
+                crystal.sprite.position.copy(crystal.position);
+                
+                // Add to sprite plane to ensure same layer
+                spritePlane.add(crystal.sprite);
+                
+                // Create a point light for the crystal
+                // Note: Light size remains unchanged to keep same glow effect
+                const crystalLight = new THREE.PointLight(0x00ffff, 0.5, 10);
+                crystalLight.position.copy(crystal.position);
+                scene.add(crystalLight);
+                crystal.light = crystalLight;
+                
+                // Add crystal to array
+                crystals.push(crystal);
+            } catch (error) {
+                debug("Error spawning crystal: " + error.message);
+            }
+        }
+        
+        // Change gravity direction (only up and down now)
+        function changeGravity(direction) {
+            gravityDirection = direction;
+            // Update direction text
+            directionText.textContent = `Gravity: ${gravityDirection.toUpperCase()} (Use Up/Down arrow keys to change)`;
+            
+            // Set target rotation based on gravity direction (only up or down)
+            switch(direction) {
+                case 'down':
+                    targetRotation = { x: 0, y: 0, z: 0 };
+                    break;
+                case 'up':
+                    targetRotation = { x: Math.PI, y: 0, z: 0 };
+                    break;
+            }
+            
+            // Reset player velocity when changing gravity
+            player.velocity.set(0, 0, 0);
+            player.jumping = false;
+            player.grounded = false;
+            
+            // Toggle wall transparency based on new gravity direction
+            updateWallTransparency(direction);
+            
+            // Force all collision checks immediately to ensure proper grounding after gravity change
+            checkBoundaryCollisions();
+        }
+        
+        // Update wall transparency based on gravity direction
+        function updateWallTransparency(direction) {
+            if (!frontWall || !backWall) return;
+            
+            try {
+                // Always keep both walls transparent to see inside from any angle
+                frontWall.material.transparent = true;
+                frontWall.material.opacity = 0.1;
+                backWall.material.transparent = true;
+                backWall.material.opacity = 0.1;
+                
+                // Ensure materials update
+                frontWall.material.needsUpdate = true;
+                backWall.material.needsUpdate = true;
+            } catch (error) {
+                debug("Error updating wall transparency: " + error.message);
+            }
+        }
+        
+        // Update player position
+        function updatePlayerPosition() {
+            try {
+                // Update position of the placeholder mesh
+                if (playerMesh) {
+                    playerMesh.position.copy(player.position);
+                }
+                
+                // Update position of the sprite
+                if (player.sprite) {
+                    player.sprite.position.copy(player.position);
+                    
+                    // Apply proper sprite rotation and orientation based on gravity direction (only up or down)
+                    if (gravityDirection === 'up') {
+                        // When on ceiling, rotate sprite 180 degrees
+                        player.sprite.material.rotation = 0; // Set rotation to 0 and use scale flipping instead
+                        
+                        // Also flip sprite vertically to make feet touch ceiling
+                        player.sprite.scale.y = -Math.abs(player.sprite.scale.y);
+                        
+                        // Handle horizontal flipping based on facing direction
+                        if (player.facingDirection < 0) {
+                            player.sprite.scale.x = -Math.abs(player.sprite.scale.x);
+                        } else {
+                            player.sprite.scale.x = Math.abs(player.sprite.scale.x);
+                        }
+                    } else {
+                        // Normal orientation for floor gravity
+                        player.sprite.material.rotation = 0;
+                        player.sprite.scale.y = Math.abs(player.sprite.scale.y); // Ensure proper y orientation
+                        
+                        // Handle horizontal flipping based on facing direction
+                        if (player.facingDirection < 0) {
+                            player.sprite.scale.x = -Math.abs(player.sprite.scale.x);
+                        } else {
+                            player.sprite.scale.x = Math.abs(player.sprite.scale.x);
+                        }
+                    }
+                }
+                
+                // Update point light position to follow player
+                pointLight.position.copy(player.position);
+            } catch (error) {
+            }
+        }
+        
+        // Handle player movement
+        function handlePlayerMovement() {
+            try {
+                // Update animation
+                player.animationCounter++;
+                if (player.animationCounter >= player.animationSpeed) {
+                    player.animationCounter = 0;
+                    player.currentFrame = (player.currentFrame + 1) % player.frames;
+                    updatePlayerFrame();
+                }
+                
+                // Determine controls relative to current view
+                let moveLeft = keys['a'] || keys['A'];
+                let moveRight = keys['d'] || keys['D']; 
+                let jump = keys[' '] || keys['w'] || keys['W'];
+                
+                // Apply movement based on controls and gravity direction
+                const tempVec = new THREE.Vector3();
+                
+                if (moveLeft || moveRight) {
+                    // Direction vector (will be modified based on gravity)
+                    let dirX = 0, dirY = 0, dirZ = 0;
+                    
+                    if (moveLeft) {
+                        player.facingDirection = -1; // Update facing direction
+                        
+                        switch(gravityDirection) {
+                            case 'down':
+                                dirX = -1;
+                                break;
+                            case 'up':
+                                dirX = 1; // When gravity is up, A moves you right
+                                break;
+                        }
+                    } else if (moveRight) {
+                        player.facingDirection = 1; // Update facing direction
+                        
+                        switch(gravityDirection) {
+                            case 'down':
+                                dirX = 1;
+                                break;
+                            case 'up':
+                                dirX = -1; // When gravity is up, D moves you left
+                                break;
+                        }
+                    }
+                    
+                    // Apply the movement
+                    tempVec.set(dirX, dirY, dirZ).multiplyScalar(player.speed);
+                    player.velocity.add(tempVec);
+                }
+
+                // Simple jump logic - no additional conditions
+                if (jump && player.grounded) {
+                    switch(gravityDirection) {
+                        case 'down':
+                            player.velocity.y = jumpForce;
+                            break;
+                        case 'up':
+                            player.velocity.y = -jumpForce;
+                            break;
+                    }
+                    
+                    player.jumping = true;
+                    player.grounded = false;
+                }
+                
+                // Apply gravity based on direction (only up or down)
+                if (gravityDirection === 'down') {
+                    player.velocity.y -= gravityForce;
+                } else if (gravityDirection === 'up') {
+                    player.velocity.y += gravityForce;
+                }
+                
+                // Apply friction to movement axes (not gravity axis)
+                player.velocity.x *= friction;
+                player.velocity.z *= friction;
+                
+                // Update position with velocity
+                player.position.add(player.velocity);
+                
+                // Check for collisions with box boundaries
+                checkBoundaryCollisions();
+                
+                // Update invulnerability state
+                if (invulnerable) {
+                    invulnerableTimer--;
+                    if (invulnerableTimer <= 0) {
+                        invulnerable = false;
+                    }
+                }
+                
+                // Check for lava collisions
+                checkLavaCollisions();
+                
+                // Update mesh and sprite positions
+                updatePlayerPosition();
+            } catch (error) {
+                debug("Error handling player movement: " + error.message);
+            }
+        }
+        
+        // Check for collisions with lava blocks
+function checkLavaCollisions() {
+    if (invulnerable) return; // Skip if player is invulnerable
+    
+    try {
+        // Player collision box
+        const playerHalfSize = player.size / 2;
+        const playerMinX = player.position.x - playerHalfSize * 0.8; // Make hitbox slightly smaller
+        const playerMaxX = player.position.x + playerHalfSize * 0.8;
+        const playerMinY = player.position.y - playerHalfSize * 0.8;
+        const playerMaxY = player.position.y + playerHalfSize * 0.8;
+        
+        // Check each lava block
+        for (let i = 0; i < lavaBlocks.length; i++) {
+            const lava = lavaBlocks[i];
+            if (!lava.active) continue;
+            
+            // Only check floor lava when gravity is down, ceiling lava when gravity is up
+            if ((gravityDirection === 'down' && lava.location === 'ceiling') || 
+                (gravityDirection === 'up' && lava.location === 'floor')) {
+                continue;
+            }
+            
+            // Lava collision box
+            const lavaHalfSize = lava.size / 2;
+            const lavaMinX = lava.position.x - lavaHalfSize;
+            const lavaMaxX = lava.position.x + lavaHalfSize;
+            const lavaMinY = lava.position.y - lavaHalfSize;
+            const lavaMaxY = lava.position.y + lavaHalfSize;
+            
+            // Simple AABB collision check
+            if (playerMaxX > lavaMinX && playerMinX < lavaMaxX &&
+                playerMaxY > lavaMinY && playerMinY < lavaMaxY) {
+                // Collision detected - take damage!
+                takeDamage(lavaDamage);
+                break; // Only take damage once per frame
+            }
+        }
+    } catch (error) {
+        debug("Error checking lava collisions: " + error.message);
+    }
+}
+        
+        // Player takes damage
+function takeDamage(amount) {
+    if (invulnerable) return; // Skip if already invulnerable
+    
+    try {
+        // Reduce health
+        playerHealth -= amount;
+        
+        // Reset player position to center
+        player.position.set(0, 0, 0);
+        player.velocity.set(0, 0, 0);
+        repositionPlayerOnGround(); // This ensures player is on the ground after reset
+        
+        // Update health display
+        updateHealthDisplay();
+        
+        // Make player invulnerable briefly
+        invulnerable = true;
+        invulnerableTimer = invulnerabilityTime;
+        
+        // Check for game over
+        if (playerHealth <= 0) {
+            playerHealth = 0;
+            updateHealthDisplay();
+            
+            // Set timer to 1 second to trigger immediate game over
+            timeLeft = 1;
+        }
+    } catch (error) {
+        debug("Error processing damage: " + error.message);
+    }
+}
+        
+function checkBoundaryCollisions() {
+    try {
+        const halfWidth = boxWidth / 2 - player.size / 2;
+        const halfHeight = boxHeight / 2 - player.size / 2;
+        const halfDepth = boxDepth / 2 - player.size / 2;
+        
+        // For debugging only
+        let wasGrounded = player.grounded;
+        
+        // Check X boundaries
+        if (player.position.x < -halfWidth) {
+            player.position.x = -halfWidth;
+            player.velocity.x = 0;
+        } else if (player.position.x > halfWidth) {
+            player.position.x = halfWidth;
+            player.velocity.x = 0;
+        }
+        
+        // Check Y boundaries and set grounded - modified to match the adjusted positioning
+        if (player.position.y < -halfHeight + 0.1) { // Added small offset for consistency
+            player.position.y = -halfHeight + 0.1;
+            player.velocity.y = 0;
+            
+            // Check for grounded on floor
+            if (gravityDirection === 'down') {
+                player.grounded = true;
+            }
+        } else if (player.position.y > halfHeight - 0.1) { // Added small offset for consistency
+            player.position.y = halfHeight - 0.1;
+            player.velocity.y = 0;
+            
+            // Check for grounded on ceiling
+            if (gravityDirection === 'up') {
+                player.grounded = true;
+            }
+        }
+        
+        // Check Z boundaries (front and back)
+        if (player.position.z < -halfDepth) {
+            player.position.z = -halfDepth;
+            player.velocity.z = 0;
+        } else if (player.position.z > halfDepth) {
+            player.position.z = halfDepth;
+            player.velocity.z = 0;
+        }
+    } catch (error) {
+        debug("Error checking boundary collisions: " + error.message);
+    }
+}
+        
+        // Check for crystal collection
+        function checkCrystalCollection() {
+            try {
+                // Using a 2D distance check (ignoring Z) since all sprites are on the same plane
+                // Adjust collection distance based on the new sizes
+                const collectionDistance = player.size / 2 + 0.8;
+                
+                for (let i = 0; i < crystals.length; i++) {
+                    if (crystals[i].collected) continue;
+                    
+                    // Calculate 2D distance (XY plane only)
+                    const dx = player.position.x - crystals[i].position.x;
+                    const dy = player.position.y - crystals[i].position.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance < collectionDistance) {
+                        // Crystal collected!
+                        collectCrystal(i);
+                        
+                        // Update score
+                        score++;
+                        scoreElement.textContent = score;
+                        // Spawn a new crystal
+                        spawnCrystal();
+                    }
+                }
+            } catch (error) {
+                debug("Error checking crystal collection: " + error.message);
+            }
+        }
+        
+        // Collect a crystal
+        function collectCrystal(index) {
+            try {
+                const crystal = crystals[index];
+                crystal.collected = true;
+                
+                // Remove crystal sprite from scene
+                if (crystal.sprite) {
+                    spritePlane.remove(crystal.sprite);
+                }
+                
+                // Remove crystal light from scene
+                if (crystal.light) {
+                    scene.remove(crystal.light);
+                }
+                
+                // Remove crystal from array
+                crystals.splice(index, 1);
+            } catch (error) {
+                debug("Error collecting crystal: " + error.message);
+            }
+        }
+        
+        // Update crystal lights
+        function updateCrystalLights() {
+            try {
+                for (let i = 0; i < crystals.length; i++) {
+                    const crystal = crystals[i];
+                    
+                    if (!crystal.collected && crystal.light) {
+                        // Keep light position synced with crystal
+                        crystal.light.position.copy(crystal.position);
+                    }
+                }
+            } catch (error) {
+                debug("Error updating crystal lights: " + error.message);
+            }
+        }
+        
+        // Smoothly rotate camera to match gravity
+        function updateCameraRotation() {
+            try {
+                // Calculate the difference between current and target rotation
+                const diffX = targetRotation.x - currentRotation.x;
+                const diffY = targetRotation.y - currentRotation.y;
+                const diffZ = targetRotation.z - currentRotation.z;
+                
+                // Apply a portion of the difference (smooth transition)
+                currentRotation.x += diffX * rotationSpeed;
+                currentRotation.y += diffY * rotationSpeed;
+                currentRotation.z += diffZ * rotationSpeed;
+                
+                // Apply rotation to the spritePlane (which now includes the box)
+                spritePlane.rotation.x = currentRotation.x;
+                spritePlane.rotation.y = currentRotation.y;
+                spritePlane.rotation.z = currentRotation.z;
+                
+                // Update camera position
+                updateCameraPosition();
+                
+                // Check collision after rotation to ensure proper grounding
+                if (Math.abs(diffX) < 0.01 && Math.abs(diffY) < 0.01 && Math.abs(diffZ) < 0.01) {
+                    // Rotation nearly complete, do a boundary check
+                    checkBoundaryCollisions();
+                }
+                
+                // Update wall transparency during rotation transition
+                const rotationProgress = Math.abs(currentRotation.x) / Math.PI;
+                updateTransitionTransparency(rotationProgress);
+            } catch (error) {
+                debug("Error updating camera rotation: " + error.message);
+            }
+        }
+        
+        // Handle transparency during rotation transition
+        function updateTransitionTransparency(progress) {
+            if (!frontWall || !backWall) return;
+            
+            try {
+                // Always keep both walls transparent during transitions
+                frontWall.material.opacity = 0.1;
+                backWall.material.opacity = 0.1;
+                
+                // Ensure both walls are transparent during transition
+                frontWall.material.transparent = true;
+                backWall.material.transparent = true;
+                
+                // Ensure materials update
+                frontWall.material.needsUpdate = true;
+                backWall.material.needsUpdate = true;
+            } catch (error) {
+                debug("Error updating transition transparency: " + error.message);
+            }
+        }
+        
+        // Update camera position to follow player
+        function updateCameraPosition() {
+            try {
+                // Target is at player position
+                cameraTarget.position.copy(player.position);
+                
+                // Calculate camera position based on current rotation and gravity direction
+                // Adjusted camera distance to account for larger player size
+                const distance = 30; // Increased from 30 to accommodate larger player
+                const cameraPos = new THREE.Vector3(0, 0, distance);
+                
+                // Rotate camera position based on current rotation
+                cameraPos.applyEuler(new THREE.Euler(
+                    currentRotation.x,
+                    currentRotation.y,
+                    currentRotation.z,
+                    'XYZ'
+                ));
+                
+                // Add player position
+                cameraPos.add(player.position);
+                
+                // Smooth camera movement
+                camera.position.lerp(cameraPos, 0.1);
+                
+                // Look at player
+                camera.lookAt(player.position);
+            } catch (error) {
+                debug("Error updating camera position: " + error.message);
+            }
+        }
+        
+        // Update timer
+        function updateTimer() {
+            if (!gameActive) return;
+            
+            try {
+                timeLeft--;
+                
+                const minutes = Math.floor(timeLeft / 60);
+                const seconds = timeLeft % 60;
+                timeElement.textContent = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+                
+                if (timeLeft <= 0) {
+                    gameActive = false;
+                    finalScoreElement.textContent = score;
+                    gameOverScreen.style.display = 'flex';
+                    gameOverScreen.querySelector('h1').textContent = playerHealth <= 0 ? 'Game Over!' : 'Time\'s Up!';
+                }
+            } catch (error) {
+                debug("Error updating timer: " + error.message);
+            }
+        }
+        
+        // Main game update function
+        function update() {
+            try {
+                if (gameActive) {
+                    // Handle player movement
+                    handlePlayerMovement();
+                    
+                    // Check for crystal collection
+                    checkCrystalCollection();
+                    
+                    // Update crystal lights
+                    updateCrystalLights();
+                    
+                    // Ensure we always have enough crystals
+                    if (crystals.length < maxCrystals / 2 && Math.random() < 0.02) {
+                        spawnCrystal();
+                    }
+                }
+                
+                // Update camera rotation (even when game is not active)
+                updateCameraRotation();
+                
+                // Render scene
+                renderer.render(scene, camera);
+                
+                // Request next frame
+                requestAnimationFrame(update);
+            } catch (error) {
+                debug("Error in main update loop: " + error.message);
+            }
+        }
+        
+        // Initialize game
+        function init() {
+            try {
+                // Reset game state
+                score = 0;
+                timeLeft = 180;
+                gameActive = true;
+                playerHealth = 3; // Reset health to 3
+                
+                // Reset invulnerability
+                invulnerable = false;
+                invulnerableTimer = 0;
+                
+                // Update health display
+                updateHealthDisplay();
+                
+                // Clear crystals array
+                for (let i = 0; i < crystals.length; i++) {
+                    if (crystals[i].sprite) {
+                        spritePlane.remove(crystals[i].sprite);
+                    }
+                    if (crystals[i].light) {
+                        scene.remove(crystals[i].light);
+                    }
+                }
+                crystals.length = 0;
+                
+                // Reset gravity to downward
+                gravityDirection = 'down';
+                targetRotation = { x: 0, y: 0, z: 0 };
+                currentRotation = { x: 0, y: 0, z: 0 };
+                
+                // Initialize wall transparency
+                updateWallTransparency('down');
+                
+                // Reset player
+                player.position.set(0, 0, 0);
+                player.velocity.set(0, 0, 0);
+                player.jumping = false;
+                player.grounded = false;
+                player.facingDirection = 1; // Reset facing direction
+                
+                // Position player on the floor
+                repositionPlayerOnGround();
+                
+                // Update UI
+                scoreElement.textContent = score;
+                timeElement.textContent = '3:00';
+                gameOverScreen.style.display = 'none';
+                directionText.textContent = 'Gravity: DOWN (Use Up/Down arrow keys to change)';
+                
+                // Create initial crystals
+                if (crystalTexture) {
+                    for (let i = 0; i < maxCrystals / 2; i++) {
+                        spawnCrystal();
+                    }
+                }
+                
+                // Reset lava blocks
+                for (let i = 0; i < lavaBlocks.length; i++) {
+                    lavaBlocks[i].active = true;
+                }
+                
+                // Start timer
+                if (timerInterval) {
+                    clearInterval(timerInterval);
+                }
+                timerInterval = setInterval(updateTimer, 1000);
+            } catch (error) {
+                debug("Error initializing game: " + error.message);
+            }
+        }
+        
+        // Restart game
+        restartBtn.addEventListener('click', function() {
+            init();
+        });
+        
+        // Start the game
+        function startGame() {
+            try {
+                // Set up Three.js
+                initThree();
+                
+                // Create player and crystals (box is created after texture loads)
+                createPlayer();
+                createCrystals();
+                
+                // Initialize health display
+                createFallbackHearts();
+                
+                // Start game loop
+                update();
+                
+                // Initialize game
+                init();
+            } catch (error) {
+                debug("Error starting game: " + error.message);
+            }
+        }
+        
+        // Start the game once everything is loaded
+        let timerInterval;
+        window.onload = startGame;
+    </script>
+</body>
+</html>
